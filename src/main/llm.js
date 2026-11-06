@@ -121,34 +121,65 @@ async function openaiChat(p, { model, messages }, onDelta, signal) {
 }
 
 // --- Claude Code ---------------------------------------------------------------------------------
-// The prompt goes in on stdin, never on the command line: the shell (needed for an npm claude.cmd)
-// only ever sees fixed arguments.
+// The prompt goes in on stdin, never on the command line. On Windows Claude Code is started from its
+// own claude.exe, so no shell sits in between and each argument reaches it as is. Only when there's
+// nothing but a script (claude.cmd) does it go through cmd, on one line built here from fixed
+// arguments.
 
-const quote = (s) => (process.platform === 'win32' ? `"${s}"` : s); // cmd joins the arguments
 // its session id, picked here so her hooks can tell its events from your other sessions' (main.js)
 let claudeSession = null;
 let claudeStarted = false; // each message after the first continues the same conversation
 
-function claudeVersion() {
+// The claude.exe behind `claude`: the native installer's, or the one npm's claude.cmd starts.
+// null when none is found (then the shell runs the script).
+let claudeExePath = null;
+function claudeExe() {
+  if (claudeExePath) return Promise.resolve(claudeExePath);
+  return new Promise((resolve) => {
+    execFile('where.exe', ['claude'], { windowsHide: true, timeout: 5000 }, (err, out) => {
+      const found = err ? [] : String(out).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      for (const file of found) {
+        const exe = /\.exe$/i.test(file) ? file
+          : path.join(path.dirname(file), 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+        if (fs.existsSync(exe)) return resolve(claudeExePath = exe);
+      }
+      resolve(null);
+    });
+  });
+}
+
+// [file, args, options] to start `claude args` with
+async function claudeCommand(args) {
+  if (process.platform !== 'win32') return ['claude', args, {}];
+  const exe = await claudeExe();
+  if (exe) return [exe, args, {}];
+  // cmd joins what it's given: the whole line here, a path with spaces in quotes
+  return [['claude', ...args.map((a) => (/\s/.test(a) ? `"${a}"` : a))].join(' '), [], { shell: true }];
+}
+
+async function claudeVersion() {
+  const [file, args, options] = await claudeCommand(['--version']);
   return new Promise((resolve, reject) => {
-    execFile('claude', ['--version'], { shell: process.platform === 'win32', timeout: 10000 }, (err, out) => (
+    execFile(file, args, { ...options, windowsHide: true, timeout: 10000 }, (err, out) => (
       err ? reject(new Error('Claude Code not found (is `claude` on your PATH?)')) : resolve(out.trim())));
   });
 }
 
-function claudeChat(cfg, text, persona, onDelta, signal) {
-  // her persona, from a file: too long and too full of quotes and newlines for cmd's command line
+async function claudeChat(cfg, text, persona, onDelta, signal) {
+  // her persona, from a file: too long and too full of quotes and newlines for a command line
   const personaFile = path.join(os.tmpdir(), 'capri-persona.txt');
   fs.writeFileSync(personaFile, persona);
   const args = ['-p', '--output-format', 'stream-json', '--verbose',
     '--permission-mode', CLAUDE_MODES.includes(cfg.claudeMode) ? cfg.claudeMode : 'default',
-    '--append-system-prompt-file', quote(personaFile)];
+    '--append-system-prompt-file', personaFile];
   if (!claudeSession) claudeSession = randomUUID();
   args.push(claudeStarted ? '--resume' : '--session-id', claudeSession);
+  const [file, fileArgs, options] = await claudeCommand(args);
+  if (signal.aborted) throw new Error('stopped'); // stopped while it was being looked for
   return new Promise((resolve, reject) => {
-    const child = spawn('claude', args, {
+    const child = spawn(file, fileArgs, {
+      ...options,
       cwd: cfg.claudeCwd || os.homedir(),
-      shell: process.platform === 'win32',
       windowsHide: true,
     });
     const kill = () => (process.platform === 'win32'
