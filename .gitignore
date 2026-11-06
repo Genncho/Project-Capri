@@ -7,3 +7,6 @@ Thumbs.db
 
 # local debug captures
 captures/
+
+# Snyk CLI, a local download (installed through npm too)
+snyk.exe
