@@ -44,6 +44,7 @@ const PET_GAP = 700;
 const PET_ENOUGH = 8000;
 
 const UPLINK_DAY = 'capri.uplinkDay'; // the last day she sent the red light up
+const TASKBAR_SPOT = 'capri.taskbarSpot'; // where you last put her down, resting on the taskbar (0 to 1 across)
 
 const GREEN = [0.21, 1, 0.48];
 const INK = [0.08, 0.06, 0.11];
@@ -427,8 +428,30 @@ export class Capri {
     const post = this.spot('post');
     if (this.restOn !== 'taskbar') return this.teleport(post);
     if (this.stance === 'sit' && this.perch?.id === 'taskbar') return Promise.resolve();
-    // left of the clock and the tray icons, right of the middle (the app icons, on Windows 11)
-    return this.sitOn({ win: this.ledge(), dx: clamp(this.view.w - 440, this.view.w * 0.6, post.x) });
+    // where you last put her down, else left of the clock and the tray icons, right of the middle
+    // (the app icons, on Windows 11)
+    const spot = this.taskbarSpot();
+    const dx = spot === null ? clamp(this.view.w - 440, this.view.w * 0.6, post.x) : clamp(spot * this.view.w, 60, this.view.w - 60);
+    return this.sitOn({ win: this.ledge(), dx });
+  }
+
+  // Resting on the taskbar, the place across it where you dropped or threw her last becomes hers.
+  rememberSpot() {
+    if (this.restOn !== 'taskbar' || !this.view.w) return;
+    try {
+      localStorage.setItem(TASKBAR_SPOT, String(clamp(this.pos.x / this.view.w, 0, 1)));
+    } catch {
+      // no storage: she goes back to her usual spot
+    }
+  }
+
+  taskbarSpot() {
+    try {
+      const spot = Number.parseFloat(localStorage.getItem(TASKBAR_SPOT));
+      return Number.isFinite(spot) ? spot : null;
+    } catch {
+      return null;
+    }
   }
 
   pickSeat({ frontOnly = false, except = null } = {}) {
@@ -2252,6 +2275,7 @@ export class Capri {
     this.perform('touchdown').then(async () => {
       if (id !== this.throwId) return;
       this.skid = null;
+      if (f.kind === 'throw') this.rememberSpot(); // where she ended up, after sliding
       await this.settle();
       this.onThrown?.({ how: f.kind === 'leap' ? 'leap' : 'feet', hard: f.hard, hits: f.hits });
     });
@@ -2283,7 +2307,7 @@ export class Capri {
     this.layDown();
     this.place();
     if (!soft) this.fx.dizzy(() => this.screenPoint(SPRITE.head.x, SPRITE.head.y - 20), { life: 2400 });
-    this.koSequence(f.id, side, { hard: f.hard, hits: f.hits, soft });
+    this.koSequence(f.id, side, { hard: f.hard, hits: f.hits, soft }, f.kind === 'throw');
   }
 
   // Lying there (or getting up): her middle just high enough for her outline to rest on the floor.
@@ -2295,7 +2319,7 @@ export class Capri {
     this.setMid(c);
   }
 
-  async koSequence(id, side, outcome) {
+  async koSequence(id, side, outcome, thrown = false) {
     // a moment on the floor, a twitch now and then
     const until = performance.now() + (outcome.soft ? rand(400, 700) : rand(1500, 2100));
     while (performance.now() < until) {
@@ -2324,6 +2348,7 @@ export class Capri {
     this.setStance('stand');
     this.pos = { x: clamp(this.pos.x, 60, this.view.w - 60), y: this.floor };
     this.place();
+    if (thrown) this.rememberSpot(); // where she got back up
     this.voice.play('land');
     await this.perform('shake');
     if (id !== this.throwId) return;
@@ -2572,6 +2597,7 @@ export class Capri {
       this.voice.play('land');
       return;
     }
+    this.rememberSpot(); // down to the floor, straight below
     if (this.pos.y < this.floor - 2) this.fall();
     else this.perform('land');
   }
