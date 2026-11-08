@@ -1,0 +1,1 @@
+- This is an independent project. Never fetch, pull, merge or copy code from the original capri-desktop repo (mochiiwuff). Ask the user first if upstream code seems needed.
